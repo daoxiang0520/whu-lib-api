@@ -4,25 +4,25 @@
 
 武汉大学图书馆选座系统 (`seat.lib.whu.edu.cn`) 的 TAC (Tianai Captcha) 滑块验证码自动化。
 
-> **状态**: ✅ **已完全破解** — Gen + Check 均可在 Python 中独立完成。
+> **状态**: ✅ **加密层 100% 打通** — Gen 成功，Check 加密正确。⚠️ **缺口识别待验证** — 模式参考图差分法已就绪，受 IP 风控暂未完成端到端测试。
 
 ## 文件清单
 
 | 文件 | 说明 |
 |---|---|
 | `tac.min.js` | TAC 滑块验证码 SDK (混淆/压缩) |
-| `p.py` | 原始脚本 (修复前), 来自网络 |
-| `m.py` | 另一个版本 (修复前) |
-| `fixed.py` | 修复版本 v1 (RSA密钥、Base64) |
-| `fixed_v2.py`~`fixed_v6.py` | 逐步调试版本 |
+| `p.py` / `m.py` | 原始脚本 (修复前) |
+| `fixed.py` ~ `fixed_v6.py` | 逐步调试版本 |
 | `debug_crypto.py` | RSA/AES 加密验证脚本 |
 | `compare_rsa.py` | Python vs 浏览器 PKCS#1 v1.5 对比 |
 | `replay_browser.py` | 浏览器请求重放分析 |
 | `extract_key.js` | 浏览器 Console 密钥提取 |
 | `browser_encrypt.js` | 浏览器 Console 加密工具 |
 | `intercept_captcha.js` | 浏览器 Console 请求拦截 |
-| `tac_solver_node.js` | Node.js 版尝试 (失败) |
-| `solver.py` | Python 混合方案 (需浏览器配合) |
+| **`solver_final.py`** | ✅ 完整破解脚本 (旧版 OpenCV 模板匹配) |
+| **`build_reference.py`** | 🆕 采集背景图 → 聚类 → 建立模式参考库 |
+| **`solver_with_ref.py`** | 🆕 基于参考库差分的破解脚本 |
+| **`captcha_refs.npz`** | 🆕 预构建的参考库 (2 布局组, 60 张图) |
 | `website/` | 网站离线文件 |
 | `README.md` | 本文件 |
 
@@ -284,7 +284,7 @@ Python 实现:
 
 ---
 
-## 三、完整 Python 实现
+## 三、完整 Python 实现（旧版 OpenCV 模板匹配，供参考）
 
 ```python
 import base64, json, time, random, requests, numpy as np, cv2
@@ -408,9 +408,52 @@ if __name__ == "__main__":
 
 ---
 
-## 四、调试历程
+## 四、缺口识别：模式参考图差分法 🆕
 
-### 4.1 关键发现时间线
+### 4.1 核心原理
+
+背景图基于 **2 套固定座位布局模板**，每次生成验证码时在随机位置切出缺口。采集 60 张图聚类后，对每组取像素众数（Mode），缺口被"投票消除"，得到干净的参考图。
+
+新图与参考图差分 → 差最大的 110px 窗口 = 缺口位置。
+
+```
+新图 ─┬→ 与 g0_sample 对比 → 相似度 >90%? → 用 g0_mode 差分 → 找最大110px窗口
+      └→ 与 g1_sample 对比 → 相似度 >90%? → 用 g1_mode 差分 → 找最大110px窗口
+```
+
+### 4.2 使用方法
+
+```bash
+# 1. 构建参考库 (首次)
+python build_reference.py
+# → 采集 60 张图 → 聚类分组 → 保存 captcha_refs.pkl
+
+# 2. 运行破解
+python solver_with_ref.py
+# → 加载参考库 → gen → 差分定位缺口 → check
+```
+
+### 4.3 当前状态
+
+| 阶段 | 状态 |
+|---|---|
+| Gen 加密 | ✅ 100% 成功 |
+| Check 加密 | ✅ 格式验证通过 |
+| 缺口识别 | ✅ 参考库差分法已就绪 (2 组, 匹配度 95%+) |
+| 端到端验证 | ⚠️ 本地 IP 被风控 (CK50001)，需换网络测试 |
+
+### 4.4 给别人测试
+
+只需两个文件：
+- `solver_with_ref.py`
+- `captcha_refs.npz`
+
+依赖：`pycryptodome opencv-python numpy requests`
+
+---
+## 五、调试历程
+
+### 5.1 关键发现时间线
 
 1. **RSA 密钥问题**: `app.*.js` 覆盖 `tac.min.js` 的默认密钥
 2. **custom 格式**: `{"session":{"username":"...","current_window_url":"..."}}` (全部嵌套在 session 内)
@@ -421,7 +464,7 @@ if __name__ == "__main__":
 7. **纯 Base64**: 无 JSON.stringify 包裹
 8. **PKCS#1 v1.5 兼容性**: Python 和浏览器输出格式完全一致
 
-### 4.2 500 错误的根因
+### 5.2 500 错误的根因
 
 | 阶段 | 原因 |
 |---|---|
@@ -431,7 +474,7 @@ if __name__ == "__main__":
 
 ---
 
-## 五、参考
+## 六、参考
 
 - TAC (Tianai Captcha): 滑块验证码 SDK
 - CryptoJS: 前端 AES-CTR 加密库
