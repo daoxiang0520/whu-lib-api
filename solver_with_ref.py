@@ -35,17 +35,21 @@ def make_tracks(d):
     tracks = [{'x': 0, 'y': 0, 'type': 'down', 't': 0}]
     cur, v, dt = 0.0, 0.0, 0.1
     mid = d * random.uniform(0.7, 0.85)
-    start = int(time.time()*1000)
+    rec_start = int(time.time()*1000)
     while cur < d:
         a = random.uniform(1.5, 3.5) if cur < mid else random.uniform(-5.0, -2.0)
         v = max(0.05, v + a*dt)
         cur += v*dt
-        tracks.append({'x': int(min(cur,d)), 'y': random.choice([-1,0,0,0,1]), 'type': 'move', 't': int(time.time()*1000)-start})
+        tracks.append({'x': int(min(cur,d)), 'y': random.choice([-1,0,0,0,1]), 'type': 'move', 't': int(time.time()*1000)-rec_start})
         time.sleep(random.uniform(0.01, 0.03))
-    total = int(time.time()*1000) - start
+    total = int(time.time()*1000) - rec_start
     if total < 800: total = 800 + random.randint(100, 600)
-    tracks[-1] = {'x': d, 'y': 0, 'type': 'move', 't': total}
-    return tracks, start, start+total
+    tracks.append({'x': d, 'y': 0, 'type': 'up', 't': total})
+    st_dt = datetime.fromtimestamp(rec_start/1000, timezone.utc)
+    st_str = st_dt.strftime('%Y-%m-%dT%H:%M:%S.') + f'{st_dt.microsecond//1000:03d}Z'
+    et_dt = datetime.fromtimestamp((rec_start+total)/1000, timezone.utc)
+    et_str = et_dt.strftime('%Y-%m-%dT%H:%M:%S.') + f'{et_dt.microsecond//1000:03d}Z'
+    return tracks, st_str, et_str
 
 # 加载参考库（支持 npz 和 pkl 两种格式）
 import os
@@ -107,11 +111,8 @@ for i in range(5):
     gap_x, group_id, sim = find_gap(bg_b64)
     print(f'#{i}: group={group_id} gap={gap_x}px sim={sim:.1f}%')
 
-    tracks, start, et = make_tracks(gap_x)
-    now = datetime.now(timezone.utc)
-    st_str = now.strftime('%Y-%m-%dT%H:%M:%S.') + f'{now.microsecond//1000:03d}Z'
-    et_dt = datetime.fromtimestamp(et/1000, timezone.utc)
-    et_str = et_dt.strftime('%Y-%m-%dT%H:%M:%S.') + f'{et_dt.microsecond//1000:03d}Z'
+    tracks, st_str, et_str = make_tracks(gap_x)
+
     pd = json.dumps({'bgImageWidth':600,'bgImageHeight':360,'sliderImageWidth':110,'sliderImageHeight':360,'startSlidingTime':st_str,'endSlidingTime':et_str,'trackList':tracks}, separators=(',',':'))
     db64, cb64_2, check_ki = encrypt(pd)
     r2 = s.post('https://seat.lib.whu.edu.cn/jsq/static/cap/cg/check', json={'id': g['id'], 'data': db64, 'custom': cb64_2, 'ki': check_ki})
