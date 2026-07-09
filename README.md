@@ -30,69 +30,80 @@
 
 ## 一、API 接口文档
 
-### 端点
-
-| 端点 | 方法 | 说明 |
-|---|---|---|
-| `/jsq/static/cap/cg/gen/SLIDER` | POST | 获取滑块验证码 |
-| `/jsq/static/cap/cg/check` | POST | 提交滑块验证 |
-
-基础 URL: `https://seat.lib.whu.edu.cn`
+基础 URL: `https://seat.lib.whu.edu.cn`  
+所有 API 前缀: `/jsq/static`
 
 ---
 
-### 1.1 GET 验证码 `gen/SLIDER`
+### 1.0 认证体系
 
-#### 加密请求（匹配前端行为）
+图书馆后端对两类端点有不同的认证要求:
 
-```http
+| 端点类型 | 认证方式 |
+|---|---|
+| `cap/cg/*` (验证码) | 无需 HMAC。可选 `JSESSIONID` cookie |
+| `frontApi/*` (业务) | **必须**: `token` + `loginType: PC` + **HMAC 签名** |
+
+#### HMAC 签名算法
+
+```
+signStr = "seat::" + UUID + "::" + timestamp_ms + "::" + METHOD
+signature = HMAC-SHA256(signStr, hmacKey)
+```
+
+其中 `hmacKey` 存储在 `sessionStorage.systemInfo.hmacKey`，Base64 编码的 16 字节密钥。
+
+#### 必需的 HTTP Headers (frontApi)
+
+| Header | 值 | 说明 |
+|---|---|---|
+| `token` | 40 位 hex | 登录后获取，存在 `sessionStorage.token` |
+| `loginType` | `PC` | 固定值 |
+| `X-request-id` | UUID | 随机 UUID |
+| `X-request-date` | 毫秒时间戳 | `Date.now()` |
+| `X-hmac-request-key` | 64 位 hex | HMAC-SHA256 签名 |
+
+---
+
+### 1.1 验证码：获取 `gen/SLIDER`
+
+```
 POST /jsq/static/cap/cg/gen/SLIDER
 Content-Type: application/json;charset=UTF-8
 ```
 
+**加密请求**（匹配前端 TAC SDK 行为）:
+
 ```json
 {
-    "custom": "<Base64(AES-CTR(custom_json))>",
+    "custom": "<Base64(AES-CTR(custom_plaintext))>",
     "ki": "<Base64(RSA(hex(session_key)|hex(iv)))>"
 }
 ```
 
-> **注意**: 不包含 `data` 字段。只有 `custom` 和 `ki`。
+> 仅 `custom` + `ki`，**无 `data` 字段**。
 
-#### 加密的 `custom` 明文
+**`custom` 明文** (97 bytes):
+
+```json
+{"session":{"username":"<学号>","current_window_url":"https://seat.lib.whu.edu.cn/seat/"}}
+```
+
+**非加密请求**（简单调试用）:
+
+```json
+{}
+```
+
+**响应**:
 
 ```json
 {
-    "session": {
-        "username": "<学号>",
-        "current_window_url": "https://seat.lib.whu.edu.cn/seat/"
-    }
-}
-```
-
-- 长度: 97 bytes
-- 结构: **全部嵌套在 `session` 对象内**
-
-#### 加密链
-
-```
-JSON.stringify → AES-128-CTR(NoPadding) → Base64
-```
-
-RSA 加密 `session_key` 和 `iv`:
-```
-ki = Base64(RSA_PKCS1_v1_5(hex(session_key) + "|" + hex(iv)))
-```
-
-#### 响应
-
-```json
-{
-    "id": "24260f24f48a467a9d9fd12a9894a9e6",
+    "id": "captcha_uuid",
     "captcha": {
         "type": "SLIDER",
-        "backgroundImage": "data:image/jpeg;base64,/9j/4AAQ...",
-        "templateImage": "data:image/png;base64,iVBOR...",
+        "backgroundImage": "data:image/jpeg;base64,...",
+        "templateImage": "data:image/png;base64,...",
         "backgroundImageWidth": 600,
         "backgroundImageHeight": 360,
         "templateImageWidth": 110,
@@ -104,106 +115,225 @@ ki = Base64(RSA_PKCS1_v1_5(hex(session_key) + "|" + hex(iv)))
 
 | 字段 | 说明 |
 |---|---|
-| `id` | 验证码 ID, check 时需要 |
-| `captcha.type` | `"SLIDER"` 或 `"DISABLED"` |
-| `captcha.backgroundImage` | Base64 JPEG 背景图 (data URI) |
-| `captcha.templateImage` | Base64 PNG 滑块模板 (data URI) |
-| `captcha.backgroundImageWidth` | 背景图实际宽度 (600) |
-| `captcha.backgroundImageHeight` | 背景图实际高度 (360) |
-| `captcha.templateImageWidth` | 滑块模板宽度 (110) |
-| `captcha.templateImageHeight` | 滑块模板高度 (360) |
+| `id` | 验证码 UUID，check 时回传 |
+| `captcha.type` | `"SLIDER"` 正常 / `"DISABLED"` 被拒 |
+| `captcha.backgroundImage` | Base64 JPEG 背景图 (600×360) |
+| `captcha.templateImage` | Base64 PNG 滑块模板 (110×360, 含 Alpha 通道) |
 
 ---
 
-### 1.2 提交验证 `check`
+### 1.2 验证码：提交 `check`
 
-```http
+```
 POST /jsq/static/cap/cg/check
-Content-Type: application/json;charset=UTF-8
 ```
 
 ```json
 {
     "id": "<captcha_id>",
-    "data": "<Base64(AES-CTR(data_json))>",
-    "custom": "<Base64(AES-CTR(custom_json))>",
+    "data": "<Base64(AES-CTR(data_plaintext))>",
+    "custom": "<Base64(AES-CTR(custom_plaintext))>",
     "ki": "<Base64(RSA(hex(session_key)|hex(iv)))>"
 }
 ```
 
-> **注意**: `data` 和 `custom` 使用**同一个** session_key + iv 加密。纯 Base64，无 JSON.stringify 包裹。
+> `data` 和 `custom` 用**同一个** session_key + iv。纯 Base64，无 JSON.stringify 包裹。
 
-#### 加密的 `data` 明文
+**`data` 明文**:
 
 ```json
 {
-    "bgImageWidth": 600,
-    "bgImageHeight": 360,
-    "sliderImageWidth": 110,
-    "sliderImageHeight": 360,
+    "bgImageWidth": 600, "bgImageHeight": 360,
+    "sliderImageWidth": 110, "sliderImageHeight": 360,
     "startSlidingTime": "2026-07-08T21:39:26.574Z",
     "endSlidingTime": "2026-07-08T21:39:34.070Z",
     "trackList": [
         {"x": 0, "y": 0, "type": "down", "t": 5301},
         {"x": 1, "y": 0, "type": "move", "t": 5329},
         ...
-        {"x": 213, "y": 0, "type": "move", "t": 7200}
+        {"x": 213, "y": 0, "type": "up",   "t": 7500}
     ]
 }
 ```
 
-| 字段 | 类型 | 说明 |
+| 关键约束 |
+|---|
+| `startSlidingTime`/`endSlidingTime` 是 ISO 8601 UTC 字符串**不是整数** |
+| `x` 和 `y` 是 **int** 不是 float |
+| 轨迹点必须包含 `type`: `"down"` → `"move"` → `"up"` |
+| `t` 是相对 `startSlidingTime` 的毫秒偏移 |
+
+**`custom` 明文**：与 gen 相同 (97 bytes)。
+
+**响应**:
+
+| code | msg | 说明 |
 |---|---|---|
-| `bgImageWidth` | int | 背景图宽度 (= gen 响应) |
-| `bgImageHeight` | int | 背景图高度 (= gen 响应) |
-| `sliderImageWidth` | int | 滑块模板宽度 (= gen 响应) |
-| `sliderImageHeight` | int | 滑块模板高度 (= gen 响应) |
-| `startSlidingTime` | **string** | ISO 8601 UTC 格式 `"2026-07-08T21:39:26.574Z"` |
-| `endSlidingTime` | **string** | ISO 8601 UTC 格式 |
-| `trackList[].x` | **int** | 滑块 x 位置 (像素, 整数) |
-| `trackList[].y` | **int** | 滑块 y 位置 (-1/0/1) |
-| `trackList[].type` | **string** | `"down"` (起始) 或 `"move"` |
-| `trackList[].t` | **int** | 相对开始时间的毫秒偏移 |
+| 200 | — | 验证成功，`data.token` 为操作 token |
+| 4000 | 已失效 | 验证码过期 |
+| 4001 | 验证校验失败 | 滑块位置不正确 |
+| 500 | 未知的内部错误 | 解密失败 |
+| 50001 | basic check fail | 风控/请求频率限制 |
 
-> **重要**: `startSlidingTime`/`endSlidingTime` 是 ISO 8601 字符串，不是整数时间戳！
-> `x` 和 `y` 是整数，不是浮点数！
-> 轨迹点必须包含 `type` 字段。
+---
 
-#### 加密的 `custom` 明文
+### 1.3 座位查询
 
-与 gen 请求相同:
-```json
-{"session":{"username":"<学号>","current_window_url":"https://seat.lib.whu.edu.cn/seat/"}}
+#### 查分馆座位大盘
+
 ```
+POST /jsq/static/frontApi/res/findRoomDuration/{venueId}/{date}
+Headers: token, loginType: PC, X-hmac-request-key, X-request-date, X-request-id
 
-#### 响应
-
-成功:
-```json
+Body:
 {
-    "success": true,
-    "code": 200,
-    "data": {
-        "token": "<操作token>"
-    }
+    "beginMinute": 492,     // 开始时间(分钟) eg. 08:12 = 492
+    "currentPage": 1,
+    "endMinute": 0,
+    "floorId": 0,
+    "minMinute": 0,
+    "pageSize": 12,
+    "power": false,
+    "roomType": false,
+    "sortField": "",
+    "sortType": "",
+    "windows": false
 }
 ```
 
-失败:
-```json
-{
-    "success": false,
-    "code": 4001,
-    "msg": "验证校验失败"
-}
-```
-
-| code | 说明 |
+| 参数 | 说明 |
 |---|---|
-| 200 | 验证成功 |
-| 4000 | 验证码已失效 |
-| 4001 | 滑块轨迹校验失败 |
-| 500 | 服务端内部错误 (通常是解密失败) |
+| `venueId` | 场馆 19 位雪花 ID (见下方映射) |
+| `date` | 日期 `YYYY-MM-DD` |
+
+#### 场馆 ID 映射
+
+| 场馆 | venueId |
+|---|---|
+| 总馆 | `1812737769937670144` |
+| 信息分馆 | `1812738485913751552` |
+| 工学分馆 | `1812738878798401536` |
+| 医学分馆 | `1812739190351302656` |
+
+#### 查区域内具体座位
+
+```
+POST /jsq/static/frontApi/res/freeSeatIdsDuration/{areaId}/{date}
+Body: { "beginMinute": 492, "endMinute": 0 }
+```
+
+返回每个座位的 19 位 UUID、label（桌贴号）、status（FREE/USED）。
+
+#### 查时间线
+
+```
+POST /jsq/static/frontApi/res/getTimeLine/{areaId}/{date}
+Body: {}
+```
+
+#### 查可用时段
+
+```
+POST /jsq/static/frontApi/res/getMakeSlices/{id}/{date}
+Body: {}
+POST /jsq/static/frontApi/res/findRoomSlice/{id}/{date}
+Body: {}
+POST /jsq/static/frontApi/res/getStartTimes/{id}/{date}
+Body: {}
+POST /jsq/static/frontApi/res/getEndTimes/{id}/{date}/{startMinute}
+Body: {}
+```
+
+---
+
+### 1.4 座位预约
+
+#### 预约座位
+
+```
+POST /jsq/static/frontApi/make/freeBook/{seatId}/{date}/{startMinute}/{endMinute}?capToken={captchaToken}
+Headers: token, loginType: PC, X-hmac-*, X-request-*
+Body: {}
+```
+
+| 参数 | 说明 |
+|---|---|
+| `seatId` | 19 位座位 UUID (从 `freeSeatIdsDuration` 获取) |
+| `date` | `YYYY-MM-DD` |
+| `startMinute` | 开始分钟 (8:00 = 480) |
+| `endMinute` | 结束分钟 |
+| `capToken` | 验证码 token (从 `check` 成功响应中获取) |
+
+#### 取消预约
+
+```
+POST /jsq/static/frontApi/reserve/cancel/{reservationId}
+Body: {}
+```
+
+#### 预约记录
+
+```
+POST /jsq/static/frontApi/reserve/index
+Body: { "currentPage": 1, "pageSize": 15 }
+```
+
+返回预约历史列表，含 `id`、`date`、`seatLabel`、`statusName` 等。
+
+---
+
+### 1.5 使用管理
+
+#### 查询当前使用中座位
+
+```
+POST /jsq/static/frontApi/user/currentUseMake
+Body: {}
+```
+
+返回当前正在使用的座位信息（`roomName`、`seatLabel`、`beginTime`、`endTime`）。
+
+#### 结束使用（签退）
+
+```
+POST /jsq/static/frontApi/make/stop
+Body: {}
+```
+
+---
+
+### 1.6 用户
+
+```
+POST /jsq/static/frontApi/user/getUserInfo   # 获取用户信息
+Body: {}
+
+POST /jsq/static/frontApi/user/logout        # 登出
+Body: {}
+```
+
+---
+
+### 1.7 接口总览
+
+| 端点 | 方法 | 认证 | 说明 |
+|---|---|---|---|
+| `cap/cg/gen/SLIDER` | POST | 无 | 获取滑块验证码 |
+| `cap/cg/check` | POST | 无 | 提交滑块验证 |
+| `frontApi/res/findRoomDuration/{venueId}/{date}` | POST | HMAC | 查分馆座位大盘 |
+| `frontApi/res/freeSeatIdsDuration/{areaId}/{date}` | POST | HMAC | 查区域内具体座位 |
+| `frontApi/res/getTimeLine/{id}/{date}` | POST | HMAC | 查时间线 |
+| `frontApi/res/findRoomSlice/{id}/{date}` | POST | HMAC | 查房间时段 |
+| `frontApi/res/getMakeSlices/{id}/{date}` | POST | HMAC | 查预约时段 |
+| `frontApi/res/getStartTimes/{id}/{date}` | POST | HMAC | 查可用开始时间 |
+| `frontApi/res/getEndTimes/{id}/{date}/{startMinute}` | POST | HMAC | 查可用结束时间 |
+| `frontApi/make/freeBook/{...}?capToken=` | POST | HMAC | **预约座位** |
+| `frontApi/make/stop` | POST | HMAC | **结束使用** |
+| `frontApi/reserve/cancel/{id}` | POST | HMAC | **取消预约** |
+| `frontApi/reserve/index` | POST | HMAC | 预约记录 |
+| `frontApi/user/currentUseMake` | POST | HMAC | 当前使用中座位 |
+| `frontApi/user/getUserInfo` | POST | HMAC | 用户信息 |
+| `frontApi/user/logout` | POST | HMAC | 登出 |
 
 ---
 
@@ -284,7 +414,9 @@ Python 实现:
 
 ---
 
-## 三、完整 Python 实现（旧版 OpenCV 模板匹配，供参考）
+## 三、完整 Python 实现（旧版 OpenCV 模板匹配，已废弃）
+
+> 以下代码已被参考库差分法替代。保留供学习加密流程。
 
 ```python
 import base64, json, time, random, requests, numpy as np, cv2
