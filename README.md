@@ -1,15 +1,20 @@
-# TAC 滑块验证码自动化 — 完整逆向分析与破解方案
+# 武汉大学图书馆选座系统 — 完整逆向分析与 API 封装
 
 ## 项目概况
 
-武汉大学图书馆选座系统 (`seat.lib.whu.edu.cn`) 的 TAC (Tianai Captcha) 滑块验证码自动化。
+武汉大学图书馆选座系统 (`seat.lib.whu.edu.cn`) 的完整逆向分析：
+- TAC 滑块验证码自动化破解
+- frontApi HMAC 签名算法逆向 + 纯 Python 实现
+- CAS SSO 免密认证流程
+- 完整 API 客户端封装
 
-> **状态**: ✅ **完全破解** — 5/5 成功率。加密 + 参考库差分缺口识别 + Check 全链路打通。
+> **状态**: ✅ 验证码破解 5/5 | ✅ HMAC 签名已生效 | ✅ 纯 Python 调 API
 
 ## 文件清单
 
 | 文件 | 说明 |
 |---|---|
+| **`library_api.py`** | **🆕 图书馆 API 客户端 — HMAC 签名 + CAS SSO + 完整 API 封装** |
 | `tac.min.js` | TAC 滑块验证码 SDK (混淆/压缩) |
 | `p.py` / `m.py` | 原始脚本 (修复前) |
 | `fixed.py` ~ `fixed_v6.py` | 逐步调试版本 |
@@ -46,22 +51,66 @@
 
 #### HMAC 签名算法
 
+**凭证存储**（实测，所有 sessionStorage key 带 `jsq_p-` 前缀）：
+
+| 凭证 | sessionStorage Key | 说明 |
+|---|---|---|
+| `token` | `jsq_p-token` | 40 位 hex |
+| `hmacKey` | `jsq_p-systemInfo.hmacKey` | AES-128-CBC 加密，Base64 密文 |
+| 登录方式 | `jsq_p-loginType` | `"cas"` |
+| 用户信息 | `jsq_p-userInfo` | 含 username、fullName 等 |
+
+#### hmacKey 解密
+
+`hmacKey` **不是明文 Base64**，而是 AES-128-CBC 加密存储的密文。SPA 调用 `I.decrypt()` 解密后才用于 HMAC 签名。
+
 ```
-signStr = "seat::" + UUID + "::" + timestamp_ms + "::" + METHOD
-signature = HMAC-SHA256(signStr, hmacKey)
+解密参数:
+  算法:   AES-128-CBC, PKCS7 padding
+  密钥:   b"server_date_time" (16 bytes, UTF-8)
+  IV:     b"client_date_time" (16 bytes, UTF-8)
+  输入:   Base64 密文 (如 "iME1t2eGBH8HjzXSLnhuMw==")
+  输出:   真实 HMAC 密钥 (如 b"whu2024lib", 10 bytes)
 ```
 
-其中 `hmacKey` 存储在 `sessionStorage.systemInfo.hmacKey`，Base64 编码的 16 字节密钥。
+```python
+from Cryptodome.Cipher import AES
+from Cryptodome.Util.Padding import unpad
+import base64
+
+def decrypt_hmac_key(encrypted_b64: str) -> bytes:
+    ct = base64.b64decode(encrypted_b64)
+    cipher = AES.new(b"server_date_time", AES.MODE_CBC, b"client_date_time")
+    return unpad(cipher.decrypt(ct), AES.block_size)
+```
+
+#### HMAC-SHA256 签名
+
+```
+signStr = "seat::" + UUID + "::" + timestamp_ms + "::" + METHOD.toUpperCase()
+signature = HMAC-SHA256(signStr, decrypted_hmac_key).hex()
+```
+
+```python
+import hashlib, hmac, uuid, time
+
+def make_signature(hmac_key_bytes: bytes, method: str = "POST") -> dict:
+    rid = str(uuid.uuid4())
+    ts = str(int(time.time() * 1000))
+    sign_str = f"seat::{rid}::{ts}::{method.upper()}"
+    sig = hmac.new(hmac_key_bytes, sign_str.encode(), hashlib.sha256).hexdigest()
+    return {"X-request-id": rid, "X-request-date": ts, "X-hmac-request-key": sig}
+```
 
 #### 必需的 HTTP Headers (frontApi)
 
 | Header | 值 | 说明 |
 |---|---|---|
-| `token` | 40 位 hex | 登录后获取，存在 `sessionStorage.token` |
+| `token` | 40 位 hex | 登录后获取，存在 `sessionStorage['jsq_p-token']` |
 | `loginType` | `PC` | 固定值 |
-| `X-request-id` | UUID | 随机 UUID |
+| `X-request-id` | UUID (v4, 36 字符) | 随机 UUID |
 | `X-request-date` | 毫秒时间戳 | `Date.now()` |
-| `X-hmac-request-key` | 64 位 hex | HMAC-SHA256 签名 |
+| `X-hmac-request-key` | 64 字符 hex | HMAC-SHA256 签名 |
 
 ---
 
